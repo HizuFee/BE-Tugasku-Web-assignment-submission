@@ -180,3 +180,64 @@ exports.getClassDetails = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+exports.updateClass = async (req, res) => {
+  try {
+    const classId = req.params.id;
+    const userId = req.user.userId;
+    const { name, description } = req.body;
+    
+    // Get class details
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ message: 'Class not found' });
+    }
+    
+    // Check if user is the owner of this class
+    const isOwner = await ClassContributor.isOwner(classId, userId);
+    if (!isOwner) {
+      return res.status(403).json({ message: 'Only the class owner can update this class' });
+    }
+    
+    // Update class
+    await Class.update(classId, { name, description });
+    
+    res.json({ 
+      message: 'Class updated successfully',
+      class: {
+        id: classId,
+        name,
+        description
+      }
+    });
+  } catch (error) {
+    console.error('Error in updateClass:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.deleteClass = async (req, res) => {
+  try {
+    const classId = req.params.id;
+    const userId = req.user.userId;
+    
+    // Get class details
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ message: 'Class not found' });
+    }
+    
+    // Check if user is the owner of this class
+    const isOwner = await ClassContributor.isOwner(classId, userId);
+    if (!isOwner) {
+      return res.status(403).json({ message: 'Only the class owner can delete this class' });
+    }
+    
+    // Delete class
+    await Class.delete(classId);
+    
+    res.json({ message: 'Class deleted successfully' });
+  } catch (error) {
+    console.error('Error in deleteClass:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};

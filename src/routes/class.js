@@ -28,6 +28,17 @@ router.post(
   ],
   classController.joinClass
 );
+router.put(
+  '/update/:id',
+  [
+    auth,
+    check('name', 'Class name is required').not().isEmpty(),
+    check('description', 'Description is required').not().isEmpty()
+  ],
+  classController.updateClass
+);
+
+router.delete('/delete/:id', auth, classController.deleteClass);
 
 // Get class details
 router.get('/:id', auth, classController.getClassDetails);

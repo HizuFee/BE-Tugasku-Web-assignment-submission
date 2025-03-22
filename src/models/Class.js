@@ -80,6 +80,35 @@ class Class {
       throw error;
     }
   }
+  static async update(id, { name, description }) {
+    try {
+      await db.execute(
+        'UPDATE classes SET name = ?, description = ? WHERE id = ?',
+        [name, description, id]
+      );
+      return true;
+    } catch (error) {
+      throw error;
+    }
+  }
+  
+  static async delete(id) {
+    try {
+      // Hapus dulu semua kontributor kelas
+      const ClassContributor = require('./ClassContributor');
+      await ClassContributor.deleteByClassId(id);
+      
+      // Setelah itu baru hapus kelas
+      const [result] = await db.execute(
+        'DELETE FROM classes WHERE id = ?',
+        [id]
+      );
+      return { deleted: result.affectedRows > 0 };
+    } catch (error) {
+      throw error;
+    }
+  }
 }
+
 
 module.exports = Class;

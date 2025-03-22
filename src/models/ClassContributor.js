@@ -69,6 +69,29 @@ class ClassContributor {
       throw error;
     }
   }
+  static async isOwner(classId, teacherId) {
+    try {
+      const [rows] = await db.execute(
+        'SELECT * FROM class_contributors WHERE class_id = ? AND teacher_id = ? AND role = "owner"',
+        [classId, teacherId]
+      );
+      return rows.length > 0;
+    } catch (error) {
+      throw error;
+    }
+  }
+  
+  static async deleteByClassId(classId) {
+    try {
+      const [result] = await db.execute(
+        'DELETE FROM class_contributors WHERE class_id = ?',
+        [classId]
+      );
+      return { deleted: result.affectedRows > 0 };
+    } catch (error) {
+      throw error;
+    }
+  }
 }
 
 module.exports = ClassContributor;
