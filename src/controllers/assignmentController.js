@@ -11,6 +11,8 @@ const User = require('../models/User');
 
 exports.createAssignment = async (req, res) => {
   try {
+    console.log('Raw request body:', req.body); // Debug log
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
@@ -32,6 +34,54 @@ exports.createAssignment = async (req, res) => {
     if (req.file) {
       filePath = req.file.path;
     }
+
+    // Handle selected students - check all possible field names
+    let selectedStudents = [];
+    
+    // Check various possible formats of the field name
+    if (req.body['selected_students[]']) {
+      selectedStudents = Array.isArray(req.body['selected_students[]']) 
+        ? req.body['selected_students[]'] 
+        : [req.body['selected_students[]']];
+    } else if (req.body['selected_students']) {
+      selectedStudents = Array.isArray(req.body['selected_students']) 
+        ? req.body['selected_students'] 
+        : [req.body['selected_students']];
+    } else {
+      // Check for indexed format
+      const studentKeys = Object.keys(req.body).filter(key => 
+        key.startsWith('selected_students[') || 
+        key.startsWith('selected_students[]') ||
+        key.match(/^selected_students\[\d+\]$/)
+      );
+      
+      if (studentKeys.length > 0) {
+        selectedStudents = studentKeys.map(key => req.body[key]);
+      }
+    }
+
+    console.log('Processed selected students:', selectedStudents); // Debug log
+
+    // Ensure all values are strings and remove any empty values
+    selectedStudents = selectedStudents
+      .map(id => String(id).trim())
+      .filter(id => id !== '');
+
+    if (selectedStudents.length === 0) {
+      return res.status(400).json({ message: 'No students selected for the assignment' });
+    }
+
+    // Verify all selected students are in the class
+    const classStudents = await ClassStudent.getClassStudents(class_id);
+    const classStudentIds = classStudents.map(student => student.id.toString());
+    
+    const invalidStudents = selectedStudents.filter(id => !classStudentIds.includes(id.toString()));
+    if (invalidStudents.length > 0) {
+      return res.status(400).json({ 
+        message: 'Some selected students are not in this class',
+        invalidStudents 
+      });
+    }
     
     const assignment = await Assignment.create({
       class_id,
@@ -39,13 +89,9 @@ exports.createAssignment = async (req, res) => {
       description,
       deadline,
       created_by: userId,
-      file_path: filePath
+      file_path: filePath,
+      selected_students: selectedStudents
     });
-    
-    // Initialize pending submissions for all students in the class
-    const students = await ClassStudent.getClassStudents(class_id);
-    const studentIds = students.map(student => student.id);
-    await Submission.initializeForAssignment(assignment.id, studentIds);
     
     res.status(201).json({
       message: 'Assignment created successfully',
@@ -79,7 +125,11 @@ exports.getClassAssignments = async (req, res) => {
       return res.status(403).json({ message: 'You do not have access to this class' });
     }
     
-    const assignments = await Assignment.findByClassId(classId);
+    // Get assignments based on user role
+    const assignments = await Assignment.findByClassId(
+      classId, 
+      userRole === 'student' ? userId : null
+    );
     
     // If student, include submission status for each assignment
     if (userRole === 'student') {
@@ -122,8 +172,8 @@ exports.getAssignmentDetails = async (req, res) => {
       hasAccess = isOwner || isContributor;
       userClassRole = isOwner ? 'owner' : 'contributor';
     } else if (userRole === 'student') {
-      const studentClasses = await ClassStudent.getStudentClasses(userId);
-      hasAccess = studentClasses.some(c => c.id === assignment.class_id);
+      // Check if student is assigned to this assignment
+      hasAccess = await Assignment.isStudentAssigned(assignmentId, userId);
       userClassRole = 'student';
     }
    
@@ -160,10 +210,18 @@ exports.getAssignmentDetails = async (req, res) => {
 
 exports.updateAssignment = async (req, res) => {
   try {
+    console.log('Update assignment request received:', req.body); // Debug log
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
     const assignmentId = req.params.id;
     const userId = req.user.userId;
     const { title, description, deadline } = req.body;
     
+    // Get the assignment to check permissions
     const assignment = await Assignment.findById(assignmentId);
     if (!assignment) {
       return res.status(404).json({ message: 'Assignment not found' });
@@ -188,14 +246,68 @@ exports.updateAssignment = async (req, res) => {
         fs.unlinkSync(oldFilePath);
       }
     }
+
+    // Handle selected students
+    let selectedStudents = [];
+    
+    // Check various possible formats of the field name
+    if (req.body['selected_students[]']) {
+      selectedStudents = Array.isArray(req.body['selected_students[]']) 
+        ? req.body['selected_students[]'] 
+        : [req.body['selected_students[]']];
+    } else if (req.body['selected_students']) {
+      // Handle comma-separated string
+      if (typeof req.body['selected_students'] === 'string' && req.body['selected_students'].includes(',')) {
+        selectedStudents = req.body['selected_students'].split(',');
+      } else {
+        selectedStudents = Array.isArray(req.body['selected_students']) 
+          ? req.body['selected_students'] 
+          : [req.body['selected_students']];
+      }
+    } else {
+      // Check for indexed format
+      const studentKeys = Object.keys(req.body).filter(key => 
+        key.startsWith('selected_students[') || 
+        key.startsWith('selected_students[]') ||
+        key.match(/^selected_students\[\d+\]$/)
+      );
+      
+      if (studentKeys.length > 0) {
+        selectedStudents = studentKeys.map(key => req.body[key]);
+      }
+    }
+
+    console.log('Processed selected students:', selectedStudents); // Debug log
+
+    // Ensure all values are strings and remove any empty values
+    selectedStudents = selectedStudents
+      .map(id => String(id).trim())
+      .filter(id => id !== '');
+
+    if (selectedStudents.length === 0) {
+      return res.status(400).json({ message: 'No students selected for the assignment' });
+    }
+
+    // Verify all selected students are in the class
+    const classStudents = await ClassStudent.getClassStudents(assignment.class_id);
+    const classStudentIds = classStudents.map(student => student.id.toString());
+    
+    const invalidStudents = selectedStudents.filter(id => !classStudentIds.includes(id.toString()));
+    if (invalidStudents.length > 0) {
+      return res.status(400).json({ 
+        message: 'Some selected students are not in this class',
+        invalidStudents 
+      });
+    }
     
     await Assignment.update(assignmentId, { 
       title, 
       description, 
       deadline,
-      file_path: filePath
+      file_path: filePath,
+      selected_students: selectedStudents
     });
-    
+
     const updatedAssignment = await Assignment.findById(assignmentId);
     
     res.json({
