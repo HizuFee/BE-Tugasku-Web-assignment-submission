@@ -7,18 +7,41 @@ require('dotenv').config();
 
 const app = express();
 
+// CORS configuration
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Disposition']
+}));
+
 // Middleware
-app.use(helmet());
-app.use(cors());
 app.use(express.json());
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Configure Helmet but disable certain features for iframe embedding
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      frameAncestors: ["'self'", "http://localhost:8080"],
+    }
+  },
+  frameguard: { action: 'sameorigin' }
+}));
+
+// Serve uploaded files with proper headers
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Content-Security-Policy', "frame-ancestors 'self' http://localhost:8080");
+  res.header('X-Frame-Options', 'SAMEORIGIN');
+  next();
+}, express.static(path.join(__dirname, '../uploads')));
 
 // Create uploads directory if it doesn't exist
 const fs = require('fs');
 if (!fs.existsSync('./uploads')) {
-    fs.mkdirSync('./uploads');
+  fs.mkdirSync('./uploads');
 }
 
 // Routes

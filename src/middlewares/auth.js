@@ -5,8 +5,8 @@ const User = require('../models/User');
 module.exports = async (req, res, next) => {
   console.log('Auth middleware triggered');
 
-  // Get token from header
-  const token = req.header('x-auth-token');
+  // Get token from header or query parameter
+  const token = req.header('x-auth-token') || req.query.token;
   console.log('Token received:', token ? 'Yes' : 'No');
   
   // Check if no token
@@ -21,8 +21,12 @@ module.exports = async (req, res, next) => {
     console.log('Token successfully verified:', decoded);
     
     // Get user information including role
+    console.log('Finding user with decoded userId:', decoded.userId);
     const user = await User.findById(decoded.userId);
+    console.log('Found user in auth middleware:', user);
+    
     if (!user) {
+      console.log('User not found for ID:', decoded.userId);
       return res.status(401).json({ message: 'User not found' });
     }
     
@@ -30,6 +34,7 @@ module.exports = async (req, res, next) => {
       userId: decoded.userId,
       role: user.role
     };
+    console.log('Set req.user to:', req.user);
     
     next();
   } catch (err) {

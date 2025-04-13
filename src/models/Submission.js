@@ -31,12 +31,30 @@ class Submission {
 
   static async findById(id) {
     try {
+      console.log('Submission.findById called with id:', id);
+      console.log('Type of id:', typeof id);
+
+      // Convert id to number if it's a string
+      const submissionId = typeof id === 'string' ? parseInt(id, 10) : id;
+      
+      if (!submissionId || isNaN(submissionId)) {
+        console.log('Invalid submission ID:', id);
+        return null;
+      }
+
+      console.log('Executing submission query with ID:', submissionId);
       const [rows] = await db.execute(
-        'SELECT * FROM submissions WHERE id = ?',
-        [id]
+        `SELECT s.*, u.name as student_name 
+         FROM submissions s
+         LEFT JOIN users u ON s.student_id = u.id
+         WHERE s.id = ?`,
+        [submissionId]
       );
-      return rows.length > 0 ? rows[0] : null;
+      
+      console.log('Submission query result:', rows[0] || 'No submission found');
+      return rows[0] || null;
     } catch (error) {
+      console.error('Error in Submission.findById:', error);
       throw error;
     }
   }

@@ -4,11 +4,11 @@ const db = require('../config/database');
 class Assignment {
   static async create(assignmentData) {
     try {
-      const { class_id, title, description, deadline, created_by } = assignmentData;
+      const { class_id, title, description, deadline, created_by, file_path } = assignmentData;
       
       const [result] = await db.execute(
-        'INSERT INTO assignments (class_id, title, description, deadline, created_by) VALUES (?, ?, ?, ?, ?)',
-        [class_id, title, description, deadline, created_by]
+        'INSERT INTO assignments (class_id, title, description, deadline, created_by, file_path) VALUES (?, ?, ?, ?, ?, ?)',
+        [class_id, title, description, deadline, created_by, file_path]
       );
       
       return {
@@ -23,7 +23,10 @@ class Assignment {
   static async findById(id) {
     try {
       const [rows] = await db.execute(
-        'SELECT * FROM assignments WHERE id = ?',
+        `SELECT a.*, u.name as creator_name 
+         FROM assignments a
+         JOIN users u ON a.created_by = u.id
+         WHERE a.id = ?`,
         [id]
       );
       return rows.length > 0 ? rows[0] : null;
@@ -48,12 +51,21 @@ class Assignment {
     }
   }
 
-  static async update(id, { title, description, deadline }) {
+  static async update(id, { title, description, deadline, file_path }) {
     try {
-      await db.execute(
-        'UPDATE assignments SET title = ?, description = ?, deadline = ? WHERE id = ?',
-        [title, description, deadline, id]
-      );
+      let query = 'UPDATE assignments SET title = ?, description = ?, deadline = ?';
+      let params = [title, description, deadline];
+      
+      // Only update file_path if provided
+      if (file_path !== undefined) {
+        query += ', file_path = ?';
+        params.push(file_path);
+      }
+      
+      query += ' WHERE id = ?';
+      params.push(id);
+      
+      await db.execute(query, params);
       return true;
     } catch (error) {
       throw error;
@@ -67,6 +79,18 @@ class Assignment {
         [id]
       );
       return { deleted: result.affectedRows > 0 };
+    } catch (error) {
+      throw error;
+    }
+  }
+  
+  static async getFilePath(id) {
+    try {
+      const [rows] = await db.execute(
+        'SELECT file_path FROM assignments WHERE id = ?',
+        [id]
+      );
+      return rows.length > 0 ? rows[0].file_path : null;
     } catch (error) {
       throw error;
     }
