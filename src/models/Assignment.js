@@ -6,8 +6,14 @@ class Assignment {
     const connection = await db.getConnection();
     
     try {
-      const { class_id, title, description, deadline, created_by, file_path, selected_students } = assignmentData;
+      const { class_id, title, description, deadline, created_by, file_path, selected_students, selected_topics } = assignmentData;
       
+      console.log('Creating assignment with data:', {
+        class_id, title, description, deadline, created_by,
+        selected_students_count: selected_students?.length,
+        selected_topics_count: selected_topics?.length
+      });
+
       // Start transaction
       await connection.beginTransaction();
       
@@ -34,6 +40,16 @@ class Assignment {
         );
       }
 
+      // Insert selected topics into assignment_topics table
+      if (selected_topics && selected_topics.length > 0) {
+        console.log('Inserting topics:', selected_topics);
+        const topicValues = selected_topics.map(topicId => [assignmentId, parseInt(topicId)]);
+        await connection.query(
+          'INSERT INTO assignment_topics (assignment_id, topic_id) VALUES ?',
+          [topicValues]
+        );
+      }
+
       // Commit transaction
       await connection.commit();
       
@@ -43,6 +59,7 @@ class Assignment {
       };
     } catch (error) {
       // Rollback in case of error
+      console.error('Error in Assignment.create:', error);
       await connection.rollback();
       throw error;
     } finally {
@@ -51,44 +68,47 @@ class Assignment {
   }
 
   static async findById(id) {
-    try {
-      // Get assignment details
-      const [rows] = await db.execute(
-        `SELECT a.*, u.name as creator_name 
-         FROM assignments a
-         JOIN users u ON a.created_by = u.id
-         WHERE a.id = ?`,
-        [id]
-      );
+    const [assignments] = await db.execute(`
+        SELECT 
+            a.*,
+            GROUP_CONCAT(DISTINCT s.student_id) as selected_students,
+            GROUP_CONCAT(DISTINCT t.topic_id) as selected_topics
+        FROM assignments a
+        LEFT JOIN assignment_students s ON a.id = s.assignment_id
+        LEFT JOIN assignment_topics t ON a.id = t.assignment_id
+        WHERE a.id = ?
+        GROUP BY a.id
+    `, [id]);
 
-      if (rows.length === 0) {
+    if (assignments.length === 0) {
         return null;
-      }
-
-      // Get selected students for this assignment
-      const [students] = await db.execute(
-        `SELECT u.id, u.name, u.email 
-         FROM users u
-         JOIN assignment_students ast ON u.id = ast.student_id
-         WHERE ast.assignment_id = ?`,
-        [id]
-      );
-
-      return {
-        ...rows[0],
-        selected_students: students
-      };
-    } catch (error) {
-      throw error;
     }
+
+    const assignment = assignments[0];
+    
+    // Convert selected_students string to array of integers
+    assignment.selected_students = assignment.selected_students 
+        ? assignment.selected_students.split(',').map(Number)
+        : [];
+
+    // Convert selected_topics string to array of integers
+    assignment.selected_topics = assignment.selected_topics
+        ? assignment.selected_topics.split(',').map(Number)
+        : [];
+
+    return assignment;
   }
 
   static async findByClassId(classId, studentId = null) {
     try {
       let query = `
-        SELECT a.*, u.name as creator_name 
+        SELECT DISTINCT a.*, u.name as creator_name,
+        GROUP_CONCAT(DISTINCT t.id) as topic_ids,
+        GROUP_CONCAT(DISTINCT t.name) as topic_names
         FROM assignments a
         JOIN users u ON a.created_by = u.id
+        LEFT JOIN assignment_topics at ON a.id = at.assignment_id
+        LEFT JOIN topics t ON at.topic_id = t.id
       `;
 
       const params = [classId];
@@ -104,13 +124,30 @@ class Assignment {
         query += `WHERE a.class_id = ?`;
       }
 
-      query += ` ORDER BY a.deadline ASC`;
+      query += ` GROUP BY a.id ORDER BY a.deadline ASC`;
 
       const [rows] = await db.execute(query, params);
 
+      // Process the results to format topics
+      const assignments = rows.map(row => {
+        const topics = row.topic_ids ? 
+          row.topic_ids.split(',').map((id, index) => ({
+            id: parseInt(id),
+            name: row.topic_names.split(',')[index]
+          })) : [];
+
+        delete row.topic_ids;
+        delete row.topic_names;
+
+        return {
+          ...row,
+          topics
+        };
+      });
+
       // If no studentId provided, also get the selected students for each assignment
-      if (!studentId && rows.length > 0) {
-        for (let assignment of rows) {
+      if (!studentId && assignments.length > 0) {
+        for (let assignment of assignments) {
           const [students] = await db.execute(
             `SELECT u.id, u.name, u.email 
              FROM users u
@@ -122,161 +159,221 @@ class Assignment {
         }
       }
 
-      return rows;
+      return assignments;
     } catch (error) {
       throw error;
     }
   }
 
-  static async update(id, { title, description, deadline, file_path, selected_students }) {
+  static async update(id, { title, description, deadline, file_path, selected_students, selected_topics }) {
     const connection = await db.getConnection();
     
     try {
-      console.log('Starting assignment update transaction...'); // Debug log
-      
-      // Start transaction
-      await connection.beginTransaction();
+        console.log('Updating assignment with data:', {
+            id,
+            title,
+            description,
+            deadline,
+            file_path,
+            selected_students_count: selected_students?.length,
+            selected_topics_count: selected_topics?.length
+        });
 
-      // Update assignment basic info
-      let query = 'UPDATE assignments SET title = ?, description = ?, deadline = ?';
-      let params = [title, description, deadline];
-      
-      // Only update file_path if provided
-      if (file_path !== undefined) {
-        query += ', file_path = ?';
-        params.push(file_path);
-      }
-      
-      query += ' WHERE id = ?';
-      params.push(id);
-      
-      console.log('Updating assignment basic info:', { query, params }); // Debug log
-      await connection.execute(query, params);
+        await connection.beginTransaction();
 
-      // Update selected students if provided
-      if (selected_students && Array.isArray(selected_students)) {
-        console.log('Updating selected students:', selected_students); // Debug log
-
-        // First, delete all existing assignment_students entries
-        console.log('Deleting existing assignment_students...'); // Debug log
-        await connection.execute(
-          'DELETE FROM assignment_students WHERE assignment_id = ?',
-          [id]
-        );
-
-        // Delete all existing submissions that haven't been submitted yet
-        console.log('Deleting pending submissions...'); // Debug log
-        await connection.execute(
-          'DELETE FROM submissions WHERE assignment_id = ? AND status = ?',
-          [id, 'pending']
-        );
-
-        if (selected_students.length > 0) {
-          // Insert new assignment_students entries
-          const values = selected_students.map(studentId => [id, studentId]);
-          console.log('Inserting new assignment_students:', values); // Debug log
-          await connection.query(
-            'INSERT INTO assignment_students (assignment_id, student_id) VALUES ?',
-            [values]
-          );
-
-          // Create new pending submissions for students who don't have a submission yet
-          const submissionValues = [];
-          for (const studentId of selected_students) {
-            // Check if student already has a submission
-            const [existingSubmission] = await connection.execute(
-              'SELECT 1 FROM submissions WHERE assignment_id = ? AND student_id = ?',
-              [id, studentId]
-            );
-
-            if (existingSubmission.length === 0) {
-              submissionValues.push([id, studentId, 'pending']);
-            }
-          }
-
-          if (submissionValues.length > 0) {
-            console.log('Creating new pending submissions:', submissionValues); // Debug log
-            await connection.query(
-              'INSERT INTO submissions (assignment_id, student_id, status) VALUES ?',
-              [submissionValues]
-            );
-          }
+        // Update basic assignment data
+        const updateData = [title, description, deadline];
+        let updateQuery = 'UPDATE assignments SET title = ?, description = ?, deadline = ?';
+        
+        // Only include file_path in update if it's provided
+        if (file_path !== undefined) {
+            updateQuery += ', file_path = ?';
+            updateData.push(file_path);
         }
-      }
+        
+        updateQuery += ' WHERE id = ?';
+        updateData.push(id);
 
-      // Commit transaction
-      console.log('Committing transaction...'); // Debug log
-      await connection.commit();
-      return true;
+        await connection.execute(updateQuery, updateData);
+
+        // Delete existing assignment_students and pending submissions
+        await connection.execute('DELETE FROM submissions WHERE assignment_id = ? AND status = ?', [id, 'pending']);
+        await connection.execute('DELETE FROM assignment_students WHERE assignment_id = ?', [id]);
+
+        // Insert new assignment_students and create pending submissions
+        if (selected_students && selected_students.length > 0) {
+            console.log('Inserting selected students:', selected_students);
+            const studentValues = selected_students.map(studentId => [id, parseInt(studentId)]);
+            await connection.query(
+                'INSERT INTO assignment_students (assignment_id, student_id) VALUES ?',
+                [studentValues]
+            );
+
+            // Create pending submissions for new students
+            await connection.query(
+                'INSERT INTO submissions (assignment_id, student_id, status) VALUES ?',
+                [studentValues.map(([assignId, studentId]) => [assignId, studentId, 'pending'])]
+            );
+        }
+
+        // Delete existing assignment_topics
+        await connection.execute('DELETE FROM assignment_topics WHERE assignment_id = ?', [id]);
+
+        // Insert new assignment_topics
+        if (selected_topics && selected_topics.length > 0) {
+            console.log('Inserting selected topics:', selected_topics);
+            const topicValues = selected_topics.map(topicId => [id, parseInt(topicId)]);
+            await connection.query(
+                'INSERT INTO assignment_topics (assignment_id, topic_id) VALUES ?',
+                [topicValues]
+            );
+        }
+
+        await connection.commit();
+        console.log('Assignment update completed successfully');
+        
+        // Return updated assignment
+        return await this.findById(id);
     } catch (error) {
-      // Rollback in case of error
-      console.error('Error in update, rolling back:', error); // Debug log
-      await connection.rollback();
-      throw error;
+        await connection.rollback();
+        console.error('Error in Assignment.update:', error);
+        throw error;
     } finally {
-      connection.release();
+        connection.release();
     }
   }
   
   static async delete(id) {
+    const connection = await db.getConnection();
     try {
-      // Start transaction
-      await db.beginTransaction();
-      
-      try {
+        await connection.beginTransaction();
+        
         // Delete assignment_students entries
-        await db.execute(
-          'DELETE FROM assignment_students WHERE assignment_id = ?',
-          [id]
+        await connection.execute(
+            'DELETE FROM assignment_students WHERE assignment_id = ?',
+            [id]
         );
 
         // Delete submissions
-        await db.execute(
-          'DELETE FROM submissions WHERE assignment_id = ?',
-          [id]
+        await connection.execute(
+            'DELETE FROM submissions WHERE assignment_id = ?',
+            [id]
+        );
+
+        // Delete assignment_topics
+        await connection.execute(
+            'DELETE FROM assignment_topics WHERE assignment_id = ?',
+            [id]
         );
 
         // Delete assignment
-        const [result] = await db.execute(
-          'DELETE FROM assignments WHERE id = ?',
-          [id]
+        const [result] = await connection.execute(
+            'DELETE FROM assignments WHERE id = ?',
+            [id]
         );
 
-        // Commit transaction
-        await db.commit();
-        
+        await connection.commit();
         return { deleted: result.affectedRows > 0 };
-      } catch (error) {
-        // Rollback in case of error
-        await db.rollback();
-        throw error;
-      }
     } catch (error) {
-      throw error;
+        await connection.rollback();
+        console.error('Error in Assignment.delete:', error);
+        throw error;
+    } finally {
+        connection.release();
     }
   }
   
   static async getFilePath(id) {
+    const connection = await db.getConnection();
     try {
-      const [rows] = await db.execute(
+      const [rows] = await connection.execute(
         'SELECT file_path FROM assignments WHERE id = ?',
         [id]
       );
       return rows.length > 0 ? rows[0].file_path : null;
     } catch (error) {
+      console.error('Error in Assignment.getFilePath:', error);
       throw error;
+    } finally {
+      connection.release();
     }
   }
 
   static async isStudentAssigned(assignmentId, studentId) {
+    const connection = await db.getConnection();
     try {
-      const [rows] = await db.execute(
+      const [rows] = await connection.execute(
         'SELECT 1 FROM assignment_students WHERE assignment_id = ? AND student_id = ?',
         [assignmentId, studentId]
       );
       return rows.length > 0;
     } catch (error) {
+      console.error('Error in Assignment.isStudentAssigned:', error);
       throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  static async createWithTopicsAndStudents({
+    class_id,
+    title,
+    description,
+    deadline,
+    file_path,
+    created_by,
+    selected_students,
+    selected_topics
+  }) {
+    const connection = await db.getConnection();
+    
+    try {
+        await connection.beginTransaction();
+
+        // Create assignment
+        const [result] = await connection.execute(
+            'INSERT INTO assignments (class_id, title, description, deadline, file_path, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+            [class_id, title, description, deadline, file_path, created_by]
+        );
+        
+        const assignmentId = result.insertId;
+
+        // Insert assignment_students
+        if (selected_students && selected_students.length > 0) {
+            const studentValues = selected_students.map(studentId => [assignmentId, parseInt(studentId)]);
+            await connection.query(
+                'INSERT INTO assignment_students (assignment_id, student_id) VALUES ?',
+                [studentValues]
+            );
+
+            // Create pending submissions for each student
+            const submissionValues = selected_students.map(studentId => [assignmentId, parseInt(studentId), 'pending']);
+            await connection.query(
+                'INSERT INTO submissions (assignment_id, student_id, status) VALUES ?',
+                [submissionValues]
+            );
+        }
+
+        // Insert assignment_topics
+        if (selected_topics && selected_topics.length > 0) {
+            const topicValues = selected_topics.map(topicId => [assignmentId, parseInt(topicId)]);
+            await connection.query(
+                'INSERT INTO assignment_topics (assignment_id, topic_id) VALUES ?',
+                [topicValues]
+            );
+        }
+
+        await connection.commit();
+
+        // Fetch complete assignment data
+        return await this.findById(assignmentId);
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error in Assignment.createWithTopicsAndStudents:', error);
+        throw error;
+    } finally {
+        connection.release();
     }
   }
 }

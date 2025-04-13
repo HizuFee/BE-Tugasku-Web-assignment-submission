@@ -6,6 +6,16 @@ class Submission {
     try {
       const { assignment_id, student_id, file_path, notes } = submissionData;
       
+      // Normalize file path
+      let normalizedFilePath = null;
+      if (file_path) {
+        normalizedFilePath = file_path.replace(/\\/g, '/');
+        if (normalizedFilePath.includes('uploads/')) {
+          normalizedFilePath = normalizedFilePath.substring(normalizedFilePath.indexOf('uploads/') + 8);
+        }
+        console.log('Normalized file path:', normalizedFilePath);
+      }
+      
       // Check if submission exists
       const existing = await this.findByAssignmentAndStudent(assignment_id, student_id);
       
@@ -13,18 +23,19 @@ class Submission {
         // Update existing submission
         await db.execute(
           'UPDATE submissions SET file_path = ?, notes = ?, status = ?, submitted_at = NOW() WHERE id = ?',
-          [file_path, notes, 'submitted', existing.id]
+          [normalizedFilePath, notes, 'submitted', existing.id]
         );
         return { id: existing.id, updated: true };
       } else {
         // Create new submission
         const [result] = await db.execute(
           'INSERT INTO submissions (assignment_id, student_id, file_path, notes, status, submitted_at) VALUES (?, ?, ?, ?, ?, NOW())',
-          [assignment_id, student_id, file_path, notes, 'submitted']
+          [assignment_id, student_id, normalizedFilePath, notes, 'submitted']
         );
         return { id: result.insertId, updated: false };
       }
     } catch (error) {
+      console.error('Error in Submission.create:', error);
       throw error;
     }
   }

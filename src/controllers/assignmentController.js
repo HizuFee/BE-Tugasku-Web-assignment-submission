@@ -3,6 +3,7 @@ const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const ClassStudent = require('../models/ClassStudent');
 const ClassContributor = require('../models/ClassContributor');
+const Topic = require('../models/Topic');
 const { validationResult } = require('express-validator');
 const fs = require('fs');
 const path = require('path');
@@ -11,16 +12,51 @@ const User = require('../models/User');
 
 exports.createAssignment = async (req, res) => {
   try {
-    console.log('Raw request body:', req.body); // Debug log
+    console.log('Request body:', req.body);
+    console.log('Request file:', req.file);
 
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+    const { class_id, title, description, deadline } = req.body;
+    let selected_students = [];
+    let selected_topics = [];
+
+    // Process selected_students
+    if (Array.isArray(req.body['selected_students'])) {
+      selected_students = req.body['selected_students'];
+    } else if (Array.isArray(req.body['selected_students[]'])) {
+      selected_students = req.body['selected_students[]'];
+    } else if (req.body.selected_students) {
+      if (typeof req.body.selected_students === 'string') {
+        selected_students = req.body.selected_students.split(',').map(id => id.trim());
+      } else {
+        selected_students = [req.body.selected_students];
+      }
+    }
+
+    // Process selected_topics
+    if (Array.isArray(req.body['selected_topics'])) {
+      selected_topics = req.body['selected_topics'];
+    } else if (Array.isArray(req.body['selected_topics[]'])) {
+      selected_topics = req.body['selected_topics[]'];
+    } else if (req.body.selected_topics) {
+      if (typeof req.body.selected_topics === 'string') {
+        selected_topics = req.body.selected_topics.split(',').map(id => id.trim());
+      } else {
+        selected_topics = [req.body.selected_topics];
+      }
     }
 
     const userId = req.user.userId;
-    const { class_id, title, description, deadline } = req.body;
-    
+
+    // Debug logging
+    console.log('Selected students (raw):', selected_students);
+    console.log('Selected topics (raw):', selected_topics);
+    console.log('User ID:', userId);
+
+    // Validate required fields
+    if (!class_id || !title || !description || !deadline) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
     // Check if user has permission (owner or contributor)
     const isOwner = await ClassContributor.isOwner(class_id, userId);
     const isContributor = await ClassContributor.isContributor(class_id, userId);
@@ -28,78 +64,49 @@ exports.createAssignment = async (req, res) => {
     if (!isOwner && !isContributor) {
       return res.status(403).json({ message: 'You do not have permission to create assignments for this class' });
     }
-    
+
+    // Filter out any empty or invalid values
+    selected_students = selected_students.filter(id => id && id.trim());
+    selected_topics = selected_topics.filter(id => id && id.trim());
+
+    // Validate at least one student is selected
+    if (!selected_students.length) {
+      return res.status(400).json({ message: 'Please select at least one student' });
+    }
+
+    console.log('Processed selected_students:', selected_students);
+    console.log('Processed selected_topics:', selected_topics);
+
     // Handle file upload
-    let filePath = null;
+    let file_path = null;
     if (req.file) {
-      filePath = req.file.path;
+      file_path = req.file.path.replace(/\\/g, '/'); // Convert Windows path to Unix-style
+      console.log('File path:', file_path);
     }
 
-    // Handle selected students - check all possible field names
-    let selectedStudents = [];
-    
-    // Check various possible formats of the field name
-    if (req.body['selected_students[]']) {
-      selectedStudents = Array.isArray(req.body['selected_students[]']) 
-        ? req.body['selected_students[]'] 
-        : [req.body['selected_students[]']];
-    } else if (req.body['selected_students']) {
-      selectedStudents = Array.isArray(req.body['selected_students']) 
-        ? req.body['selected_students'] 
-        : [req.body['selected_students']];
-    } else {
-      // Check for indexed format
-      const studentKeys = Object.keys(req.body).filter(key => 
-        key.startsWith('selected_students[') || 
-        key.startsWith('selected_students[]') ||
-        key.match(/^selected_students\[\d+\]$/)
-      );
-      
-      if (studentKeys.length > 0) {
-        selectedStudents = studentKeys.map(key => req.body[key]);
-      }
-    }
-
-    console.log('Processed selected students:', selectedStudents); // Debug log
-
-    // Ensure all values are strings and remove any empty values
-    selectedStudents = selectedStudents
-      .map(id => String(id).trim())
-      .filter(id => id !== '');
-
-    if (selectedStudents.length === 0) {
-      return res.status(400).json({ message: 'No students selected for the assignment' });
-    }
-
-    // Verify all selected students are in the class
-    const classStudents = await ClassStudent.getClassStudents(class_id);
-    const classStudentIds = classStudents.map(student => student.id.toString());
-    
-    const invalidStudents = selectedStudents.filter(id => !classStudentIds.includes(id.toString()));
-    if (invalidStudents.length > 0) {
-      return res.status(400).json({ 
-        message: 'Some selected students are not in this class',
-        invalidStudents 
-      });
-    }
-    
-    const assignment = await Assignment.create({
+    // Create assignment with transaction
+    const result = await Assignment.createWithTopicsAndStudents({
       class_id,
       title,
       description,
       deadline,
+      file_path,
       created_by: userId,
-      file_path: filePath,
-      selected_students: selectedStudents
+      selected_students,
+      selected_topics
     });
-    
+
     res.status(201).json({
       message: 'Assignment created successfully',
-      assignment
+      assignment: result
     });
+
   } catch (error) {
     console.error('Error in createAssignment:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({
+      message: 'Failed to create assignment',
+      error: error.message
+    });
   }
 };
 
@@ -210,7 +217,7 @@ exports.getAssignmentDetails = async (req, res) => {
 
 exports.updateAssignment = async (req, res) => {
   try {
-    console.log('Update assignment request received:', req.body); // Debug log
+    console.log('Update assignment request received:', req.body);
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -234,11 +241,55 @@ exports.updateAssignment = async (req, res) => {
     if (!isOwner && !isContributor) {
       return res.status(403).json({ message: 'You do not have permission to update this assignment' });
     }
-    
+
+    // Handle selected students
+    let selectedStudents = [];
+    if (Array.isArray(req.body['selected_students[]'])) {
+      selectedStudents = req.body['selected_students[]'];
+    } else if (req.body['selected_students[]']) {
+      selectedStudents = [req.body['selected_students[]']];
+    } else if (req.body.selected_students) {
+      if (typeof req.body.selected_students === 'string') {
+        selectedStudents = req.body.selected_students.split(',').map(id => id.trim());
+      } else if (Array.isArray(req.body.selected_students)) {
+        selectedStudents = req.body.selected_students;
+      } else {
+        selectedStudents = [req.body.selected_students];
+      }
+    }
+
+    // Handle selected topics
+    let selectedTopics = [];
+    if (Array.isArray(req.body['selected_topics[]'])) {
+      selectedTopics = req.body['selected_topics[]'];
+    } else if (req.body['selected_topics[]']) {
+      selectedTopics = [req.body['selected_topics[]']];
+    } else if (req.body.selected_topics) {
+      if (typeof req.body.selected_topics === 'string') {
+        selectedTopics = req.body.selected_topics.split(',').map(id => id.trim());
+      } else if (Array.isArray(req.body.selected_topics)) {
+        selectedTopics = req.body.selected_topics;
+      } else {
+        selectedTopics = [req.body.selected_topics];
+      }
+    }
+
+    // Filter out any empty values
+    selectedStudents = selectedStudents.filter(id => id && id.trim());
+    selectedTopics = selectedTopics.filter(id => id && id.trim());
+
+    console.log('Processed selected students:', selectedStudents);
+    console.log('Processed selected topics:', selectedTopics);
+
+    if (selectedStudents.length === 0) {
+      return res.status(400).json({ message: 'No students selected for the assignment' });
+    }
+
     // Handle file update
     let filePath = undefined; // undefined means don't update the file path
     if (req.file) {
-      filePath = req.file.path;
+      filePath = req.file.path.replace(/\\/g, '/');
+      console.log('New file path:', filePath);
       
       // If there was an old file, remove it
       const oldFilePath = await Assignment.getFilePath(assignmentId);
@@ -247,69 +298,16 @@ exports.updateAssignment = async (req, res) => {
       }
     }
 
-    // Handle selected students
-    let selectedStudents = [];
-    
-    // Check various possible formats of the field name
-    if (req.body['selected_students[]']) {
-      selectedStudents = Array.isArray(req.body['selected_students[]']) 
-        ? req.body['selected_students[]'] 
-        : [req.body['selected_students[]']];
-    } else if (req.body['selected_students']) {
-      // Handle comma-separated string
-      if (typeof req.body['selected_students'] === 'string' && req.body['selected_students'].includes(',')) {
-        selectedStudents = req.body['selected_students'].split(',');
-      } else {
-        selectedStudents = Array.isArray(req.body['selected_students']) 
-          ? req.body['selected_students'] 
-          : [req.body['selected_students']];
-      }
-    } else {
-      // Check for indexed format
-      const studentKeys = Object.keys(req.body).filter(key => 
-        key.startsWith('selected_students[') || 
-        key.startsWith('selected_students[]') ||
-        key.match(/^selected_students\[\d+\]$/)
-      );
-      
-      if (studentKeys.length > 0) {
-        selectedStudents = studentKeys.map(key => req.body[key]);
-      }
-    }
-
-    console.log('Processed selected students:', selectedStudents); // Debug log
-
-    // Ensure all values are strings and remove any empty values
-    selectedStudents = selectedStudents
-      .map(id => String(id).trim())
-      .filter(id => id !== '');
-
-    if (selectedStudents.length === 0) {
-      return res.status(400).json({ message: 'No students selected for the assignment' });
-    }
-
-    // Verify all selected students are in the class
-    const classStudents = await ClassStudent.getClassStudents(assignment.class_id);
-    const classStudentIds = classStudents.map(student => student.id.toString());
-    
-    const invalidStudents = selectedStudents.filter(id => !classStudentIds.includes(id.toString()));
-    if (invalidStudents.length > 0) {
-      return res.status(400).json({ 
-        message: 'Some selected students are not in this class',
-        invalidStudents 
-      });
-    }
-    
-    await Assignment.update(assignmentId, { 
-      title, 
-      description, 
+    // Update assignment
+    const updatedAssignment = await Assignment.update(assignmentId, {
+      title,
+      description,
       deadline,
       file_path: filePath,
-      selected_students: selectedStudents
+      selected_students: selectedStudents,
+      selected_topics: selectedTopics
     });
 
-    const updatedAssignment = await Assignment.findById(assignmentId);
-    
     res.json({
       message: 'Assignment updated successfully',
       assignment: updatedAssignment
@@ -541,221 +539,250 @@ exports.gradeSubmission = async (req, res) => {
 
 // Fungsi untuk mengambil file path yang benar
 function getCorrectFilePath(filePath) {
-  // Menghapus 'uploads\\' di awal path jika ada
-  if (filePath && filePath.startsWith('uploads\\')) {
-    return filePath.replace('uploads\\', '');
-  }
-  return filePath;
+    if (!filePath) return null;
+
+    // Normalize path separators
+    filePath = filePath.replace(/\\/g, '/');
+
+    // Jika path sudah absolut, ambil bagian setelah 'uploads'
+    if (path.isAbsolute(filePath)) {
+        const uploadsIndex = filePath.indexOf('uploads');
+        if (uploadsIndex !== -1) {
+            filePath = filePath.substring(uploadsIndex);
+        }
+    }
+
+    // Jika path mengandung 'uploads', ambil bagian setelahnya
+    if (filePath.includes('uploads/')) {
+        filePath = filePath.substring(filePath.indexOf('uploads/') + 8);
+    }
+
+    // Hapus karakter khusus dan spasi dari nama file
+    const dir = path.dirname(filePath);
+    const ext = path.extname(filePath);
+    const basename = path.basename(filePath, ext);
+    
+    const sanitizedBasename = basename
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+    return path.join(dir, `${sanitizedBasename}${ext}`).replace(/\\/g, '/');
 }
 
 exports.downloadSubmissionFile = async (req, res) => {
-  try {
-    const { id, submissionId } = req.params;
-    const userId = req.user.userId;
-    const userRole = req.user.role;
-    
-    console.log(`Download submission file request - Assignment: ${id}, Submission: ${submissionId}, User: ${userId}, Role: ${userRole}`);
-    
-    // Get submission
-    const submission = await Submission.findById(submissionId);
-    
-    if (!submission) {
-      console.log(`Submission not found: ${submissionId}`);
-      return res.status(404).json({ message: 'Submission tidak ditemukan' });
-    }
-    
-    console.log('Found submission:', JSON.stringify(submission, null, 2));
+    try {
+        const { id, submissionId } = req.params;
+        const userId = req.user.userId;
+        const userRole = req.user.role;
+        
+        console.log(`Download submission file request - Assignment: ${id}, Submission: ${submissionId}, User: ${userId}, Role: ${userRole}`);
+        
+        // Get submission
+        const submission = await Submission.findById(submissionId);
+        
+        if (!submission) {
+            console.log(`Submission not found: ${submissionId}`);
+            return res.status(404).json({ message: 'Submission tidak ditemukan' });
+        }
+        
+        console.log('Found submission:', JSON.stringify(submission, null, 2));
 
-    // Get assignment
-    const assignment = await Assignment.findById(id);
-    
-    if (!assignment) {
-      console.log(`Assignment not found: ${id}`);
-      return res.status(404).json({ message: 'Assignment tidak ditemukan' });
-    }
-    
-    console.log('Found assignment:', JSON.stringify(assignment, null, 2));
+        // Get assignment
+        const assignment = await Assignment.findById(id);
+        
+        if (!assignment) {
+            console.log(`Assignment not found: ${id}`);
+            return res.status(404).json({ message: 'Assignment tidak ditemukan' });
+        }
+        
+        console.log('Found assignment:', JSON.stringify(assignment, null, 2));
 
-    // Check if user has access to this submission
-    let hasAccess = false;
-    
-    if (userRole === 'teacher') {
-      // Teachers: check if they own or contribute to the class
-      const isOwner = await ClassContributor.isOwner(assignment.class_id, userId);
-      const isContributor = await ClassContributor.isContributor(assignment.class_id, userId);
-      hasAccess = isOwner || isContributor;
-      
-      console.log('Teacher access check:', { 
-        userId,
-        classId: assignment.class_id,
-        isOwner, 
-        isContributor, 
-        hasAccess 
-      });
-    } else {
-      // Students: check if it's their own submission
-      hasAccess = parseInt(submission.student_id, 10) === parseInt(userId, 10);
-      
-      console.log('Student access check:', { 
-        submissionStudentId: submission.student_id,
-        userId,
-        hasAccess
-      });
-    }
-    
-    if (!hasAccess) {
-      console.log('Access denied for download submission file');
-      return res.status(403).json({ message: 'Anda tidak memiliki akses untuk mengunduh file ini' });
-    }
+        // Check if user has access to this submission
+        let hasAccess = false;
+        
+        if (userRole === 'teacher') {
+            // Teachers: check if they own or contribute to the class
+            const isOwner = await ClassContributor.isOwner(assignment.class_id, userId);
+            const isContributor = await ClassContributor.isContributor(assignment.class_id, userId);
+            hasAccess = isOwner || isContributor;
+            
+            console.log('Teacher access check:', { 
+                userId,
+                classId: assignment.class_id,
+                isOwner, 
+                isContributor, 
+                hasAccess 
+            });
+        } else {
+            // Students: check if it's their own submission
+            hasAccess = parseInt(submission.student_id, 10) === parseInt(userId, 10);
+            
+            console.log('Student access check:', { 
+                submissionStudentId: submission.student_id,
+                userId,
+                hasAccess
+            });
+        }
+        
+        if (!hasAccess) {
+            console.log('Access denied for download submission file');
+            return res.status(403).json({ message: 'Anda tidak memiliki akses untuk mengunduh file ini' });
+        }
 
-    // Check for submission file_path
-    const submissionFilePath = submission.file_path || submission.filePath;
-    
-    if (!submissionFilePath) {
-      console.log('No file to download - submission has no file path');
-      return res.status(404).json({ message: 'Tidak ada file yang diupload' });
-    }
+        // Check for submission file_path
+        const submissionFilePath = submission.file_path || submission.filePath;
+        
+        if (!submissionFilePath) {
+            console.log('No file to download - submission has no file path');
+            return res.status(404).json({ message: 'Tidak ada file yang diupload' });
+        }
 
-    // Mendapatkan file path yang benar
-    const fileNamePath = getCorrectFilePath(submissionFilePath);
-    const filePath = path.join(__dirname, '..', '..', 'uploads', fileNamePath);
-    console.log('File path:', filePath);
-    
-    if (!fs.existsSync(filePath)) {
-      console.log('File not found at path:', filePath);
-      return res.status(404).json({ message: 'File tidak ditemukan di server' });
-    }
+        // Mendapatkan file path yang benar
+        const fileNamePath = getCorrectFilePath(submissionFilePath);
+        const filePath = path.join(__dirname, '..', '..', 'uploads', fileNamePath);
+        console.log('File path:', filePath);
+        
+        if (!fs.existsSync(filePath)) {
+            console.log('File not found at path:', filePath);
+            return res.status(404).json({ message: 'File tidak ditemukan di server' });
+        }
 
-    // Set appropriate headers
-    const contentType = mime.lookup(filePath) || 'application/octet-stream';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(fileNamePath)}"`);
-    
-    console.log('Streaming file for download:', filePath);
+        // Set appropriate headers
+        const contentType = mime.lookup(filePath) || 'application/octet-stream';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${path.basename(fileNamePath)}"`);
+        
+        console.log('Streaming file for download:', filePath);
 
-    // Stream the file
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.on('error', (error) => {
-      console.error('Error streaming file:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Terjadi kesalahan saat membaca file' });
-      }
-    });
-    
-    fileStream.pipe(res);
-  } catch (error) {
-    console.error('Error in downloadSubmissionFile:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ 
-        message: 'Terjadi kesalahan saat mengunduh file',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+        // Stream the file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.on('error', (error) => {
+            console.error('Error streaming file:', error);
+            if (!res.headersSent) {
+                res.status(500).json({ message: 'Terjadi kesalahan saat membaca file' });
+            }
+        });
+        
+        fileStream.pipe(res);
+    } catch (error) {
+        console.error('Error in downloadSubmissionFile:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                message: 'Terjadi kesalahan saat mengunduh file',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
     }
-  }
 };
 
 exports.previewSubmissionFile = async (req, res) => {
-  try {
-    const { id, submissionId } = req.params;
-    const userId = req.user.userId;
-    const userRole = req.user.role;
-    
-    console.log(`Preview submission file request - Assignment: ${id}, Submission: ${submissionId}, User: ${userId}, Role: ${userRole}`);
-    
-    // Get submission
-    const submission = await Submission.findById(submissionId);
-    
-    if (!submission) {
-      console.log(`Submission not found: ${submissionId}`);
-      return res.status(404).json({ message: 'Submission tidak ditemukan' });
-    }
-    
-    console.log('Found submission:', JSON.stringify(submission, null, 2));
+    try {
+        const { id, submissionId } = req.params;
+        const userId = req.user.userId;
+        const userRole = req.user.role;
+        
+        console.log(`Preview submission file request - Assignment: ${id}, Submission: ${submissionId}, User: ${userId}, Role: ${userRole}`);
+        
+        // Get submission
+        const submission = await Submission.findById(submissionId);
+        
+        if (!submission) {
+            console.log(`Submission not found: ${submissionId}`);
+            return res.status(404).json({ message: 'Submission tidak ditemukan' });
+        }
+        
+        console.log('Found submission:', JSON.stringify(submission, null, 2));
 
-    // Get assignment
-    const assignment = await Assignment.findById(id);
-    
-    if (!assignment) {
-      console.log(`Assignment not found: ${id}`);
-      return res.status(404).json({ message: 'Assignment tidak ditemukan' });
-    }
-    
-    console.log('Found assignment:', JSON.stringify(assignment, null, 2));
+        // Get assignment
+        const assignment = await Assignment.findById(id);
+        
+        if (!assignment) {
+            console.log(`Assignment not found: ${id}`);
+            return res.status(404).json({ message: 'Assignment tidak ditemukan' });
+        }
+        
+        console.log('Found assignment:', JSON.stringify(assignment, null, 2));
 
-    // Check if user has access to this submission
-    let hasAccess = false;
-    
-    if (userRole === 'teacher') {
-      // Teachers: check if they own or contribute to the class
-      const isOwner = await ClassContributor.isOwner(assignment.class_id, userId);
-      const isContributor = await ClassContributor.isContributor(assignment.class_id, userId);
-      hasAccess = isOwner || isContributor;
-      
-      console.log('Teacher access check:', { 
-        userId,
-        classId: assignment.class_id,
-        isOwner, 
-        isContributor, 
-        hasAccess 
-      });
-    } else {
-      // Students: check if it's their own submission
-      hasAccess = parseInt(submission.student_id, 10) === parseInt(userId, 10);
-      
-      console.log('Student access check:', { 
-        submissionStudentId: submission.student_id,
-        userId,
-        hasAccess
-      });
-    }
-    
-    if (!hasAccess) {
-      console.log('Access denied for preview submission file');
-      return res.status(403).json({ message: 'Anda tidak memiliki akses untuk melihat file ini' });
-    }
+        // Check if user has access to this submission
+        let hasAccess = false;
+        
+        if (userRole === 'teacher') {
+            // Teachers: check if they own or contribute to the class
+            const isOwner = await ClassContributor.isOwner(assignment.class_id, userId);
+            const isContributor = await ClassContributor.isContributor(assignment.class_id, userId);
+            hasAccess = isOwner || isContributor;
+            
+            console.log('Teacher access check:', { 
+                userId,
+                classId: assignment.class_id,
+                isOwner, 
+                isContributor, 
+                hasAccess 
+            });
+        } else {
+            // Students: check if it's their own submission
+            hasAccess = parseInt(submission.student_id, 10) === parseInt(userId, 10);
+            
+            console.log('Student access check:', { 
+                submissionStudentId: submission.student_id,
+                userId,
+                hasAccess
+            });
+        }
+        
+        if (!hasAccess) {
+            console.log('Access denied for preview submission file');
+            return res.status(403).json({ message: 'Anda tidak memiliki akses untuk melihat file ini' });
+        }
 
-    // Check for submission file_path
-    const submissionFilePath = submission.file_path || submission.filePath;
-    
-    if (!submissionFilePath) {
-      console.log('No file to preview - submission has no file path');
-      return res.status(404).json({ message: 'Tidak ada file yang diupload' });
-    }
+        // Check for submission file_path
+        const submissionFilePath = submission.file_path || submission.filePath;
+        
+        if (!submissionFilePath) {
+            console.log('No file to preview - submission has no file path');
+            return res.status(404).json({ message: 'Tidak ada file yang diupload' });
+        }
 
-    // Mendapatkan file path yang benar
-    const fileNamePath = getCorrectFilePath(submissionFilePath);
-    const filePath = path.join(__dirname, '..', '..', 'uploads', fileNamePath);
-    console.log('File path:', filePath);
-    
-    if (!fs.existsSync(filePath)) {
-      console.log('File not found at path:', filePath);
-      return res.status(404).json({ message: 'File tidak ditemukan di server' });
-    }
+        // Mendapatkan file path yang benar
+        const fileNamePath = getCorrectFilePath(submissionFilePath);
+        console.log('Original file path:', submissionFilePath);
+        console.log('Corrected file path:', fileNamePath);
+        
+        const filePath = path.join(__dirname, '..', '..', 'uploads', fileNamePath);
+        console.log('Full file path:', filePath);
+        
+        if (!fs.existsSync(filePath)) {
+            console.log('File not found at path:', filePath);
+            return res.status(404).json({ message: 'File tidak ditemukan di server' });
+        }
 
-    // Set appropriate headers
-    const contentType = mime.lookup(filePath) || 'application/octet-stream';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `inline; filename="${path.basename(fileNamePath)}"`);
-    
-    console.log('Streaming file for preview:', filePath);
+        // Set appropriate headers
+        const contentType = mime.lookup(filePath) || 'application/octet-stream';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `inline; filename="${path.basename(fileNamePath)}"`);
+        
+        console.log('Streaming file for preview:', filePath);
 
-    // Stream the file
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.on('error', (error) => {
-      console.error('Error streaming file:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Terjadi kesalahan saat membaca file' });
-      }
-    });
-    
-    fileStream.pipe(res);
-  } catch (error) {
-    console.error('Error in previewSubmissionFile:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ 
-        message: 'Terjadi kesalahan saat menampilkan file',
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
-      });
+        // Stream the file
+        const fileStream = fs.createReadStream(filePath);
+        fileStream.on('error', (error) => {
+            console.error('Error streaming file:', error);
+            if (!res.headersSent) {
+                res.status(500).json({ message: 'Terjadi kesalahan saat membaca file' });
+            }
+        });
+        
+        fileStream.pipe(res);
+    } catch (error) {
+        console.error('Error in previewSubmissionFile:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                message: 'Terjadi kesalahan saat menampilkan file',
+                error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            });
+        }
     }
-  }
 };
