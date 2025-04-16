@@ -180,6 +180,7 @@ exports.getClassDetails = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
 exports.updateClass = async (req, res) => {
   try {
     const classId = req.params.id;
@@ -238,6 +239,84 @@ exports.deleteClass = async (req, res) => {
     res.json({ message: 'Class deleted successfully' });
   } catch (error) {
     console.error('Error in deleteClass:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.leaveClass = async (req, res) => {
+  try {
+    const classId = req.params.id;
+    const userId = req.user.userId;
+    const userRole = req.user.role;
+    
+    // Get class details
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ message: 'Class not found' });
+    }
+    
+    let result;
+    
+    if (userRole === 'student') {
+      // Student leaving a class
+      result = await ClassStudent.leave(classId, userId);
+    } else if (userRole === 'teacher') {
+      // Teacher leaving as a contributor
+      result = await ClassContributor.leave(classId, userId);
+    } else {
+      return res.status(403).json({ message: 'Unauthorized access' });
+    }
+    
+    if (!result.left) {
+      return res.status(400).json({ message: result.message });
+    }
+    
+    res.status(200).json({
+      message: `Successfully left the class`,
+      class: {
+        id: classId,
+        name: classData.name
+      }
+    });
+  } catch (error) {
+    console.error('Error in leaveClass:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.kickStudent = async (req, res) => {
+  try {
+    const classId = req.params.id;
+    const studentId = req.params.studentId;
+    const teacherId = req.user.userId;
+    
+    // Get class details
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ message: 'Class not found' });
+    }
+    
+    // Check if user is a teacher
+    if (req.user.role !== 'teacher') {
+      return res.status(403).json({ message: 'Only teachers can kick students from classes' });
+    }
+    
+    // Kick student from class
+    const result = await ClassContributor.kickStudent(classId, teacherId, studentId);
+    
+    if (!result.kicked) {
+      return res.status(400).json({ message: result.message });
+    }
+    
+    res.status(200).json({
+      message: 'Student successfully removed from the class',
+      class: {
+        id: classId,
+        name: classData.name
+      }
+    });
+  } catch (error) {
+    console.error('Error in kickStudent:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

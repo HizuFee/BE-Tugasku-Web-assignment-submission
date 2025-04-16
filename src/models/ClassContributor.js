@@ -24,6 +24,67 @@ class ClassContributor {
     }
   }
 
+  static async leave(classId, teacherId) {
+    try {
+      // Check if teacher is a contributor to this class
+      const [existing] = await db.execute(
+        'SELECT * FROM class_contributors WHERE class_id = ? AND teacher_id = ?',
+        [classId, teacherId]
+      );
+
+      if (existing.length === 0) {
+        return { left: false, message: 'You are not a contributor in this class' };
+      }
+
+      // Check if teacher is the owner
+      if (existing[0].role === 'owner') {
+        return { left: false, message: 'Class owner cannot leave the class. You must delete the class instead.' };
+      }
+
+      const [result] = await db.execute(
+        'DELETE FROM class_contributors WHERE class_id = ? AND teacher_id = ?',
+        [classId, teacherId]
+      );
+      
+      return { left: true, affectedRows: result.affectedRows };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  static async kickStudent(classId, teacherId, studentId) {
+    try {
+      // Check if teacher is a contributor to this class
+      const [contributor] = await db.execute(
+        'SELECT * FROM class_contributors WHERE class_id = ? AND teacher_id = ?',
+        [classId, teacherId]
+      );
+
+      if (contributor.length === 0) {
+        return { kicked: false, message: 'You are not authorized to kick students from this class' };
+      }
+
+      // Check if student is in this class
+      const [student] = await db.execute(
+        'SELECT * FROM class_students WHERE class_id = ? AND student_id = ?',
+        [classId, studentId]
+      );
+
+      if (student.length === 0) {
+        return { kicked: false, message: 'Student is not enrolled in this class' };
+      }
+
+      const [result] = await db.execute(
+        'DELETE FROM class_students WHERE class_id = ? AND student_id = ?',
+        [classId, studentId]
+      );
+      
+      return { kicked: true, affectedRows: result.affectedRows };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   static async getClassContributors(classId) {
     try {
       const [rows] = await db.execute(

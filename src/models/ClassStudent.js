@@ -25,6 +25,29 @@ class ClassStudent {
     }
   }
 
+  static async leave(classId, studentId) {
+    try {
+      // Check if student is in this class
+      const [existing] = await db.execute(
+        'SELECT * FROM class_students WHERE class_id = ? AND student_id = ?',
+        [classId, studentId]
+      );
+
+      if (existing.length === 0) {
+        return { left: false, message: 'You are not enrolled in this class' };
+      }
+
+      const [result] = await db.execute(
+        'DELETE FROM class_students WHERE class_id = ? AND student_id = ?',
+        [classId, studentId]
+      );
+      
+      return { left: true, affectedRows: result.affectedRows };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   static async getClassStudents(classId) {
     try {
       const [rows] = await db.execute(

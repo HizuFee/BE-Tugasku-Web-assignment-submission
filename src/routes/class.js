@@ -28,6 +28,13 @@ router.post(
   ],
   classController.joinClass
 );
+
+// Leave a class (both students and teachers)
+router.post('/leave/:id', auth, classController.leaveClass);
+
+// Kick a student from a class (teachers only)
+router.post('/kick/:id/student/:studentId', auth, classController.kickStudent);
+
 router.put(
   '/update/:id',
   [
